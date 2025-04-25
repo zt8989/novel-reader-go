@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"novel-reader-go/parser"
+	"novel-reader-go/utils"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,8 +45,9 @@ func min(a, b int) int {
 }
 
 var (
-	helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	reader    = parser.NewReaderWithoutUrl()
+	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	reader         = parser.NewReaderWithoutUrl()
+	historyManager = utils.NewHistoryManager()
 )
 
 // 定义模型
@@ -58,7 +60,7 @@ type model struct {
 	cursor    int
 	done      bool
 
-	history historyEntry
+	history utils.HistoryEntry
 }
 
 // 初始命令
@@ -77,7 +79,11 @@ func (m *model) fetchNovelContent(direction string) tea.Msg {
 		novelContent, err = reader.Read()
 	}
 
-	saveHistory(m.originUrl, reader.GetUrl(), 0)
+	historyManager.Save(utils.HistoryEntry{
+		OriginURL: m.originUrl,
+		LastURL:   reader.GetUrl(),
+		Cursor:    m.cursor,
+	})
 
 	if err != nil {
 		return errMsg(err)
@@ -117,13 +123,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					entry := m.history
 					m.originUrl = entry.OriginURL
 					m.cursor = entry.Cursor
+					reader.SetUrl(entry.LastURL)
 					return m, func() tea.Msg {
-						reader.SetUrl(entry.LastURL)
 						return m.fetchNovelContent("")
 					}
 				} else {
 					return m, func() tea.Msg {
-						reader.SetUrl(m.originUrl)
 						return m.fetchNovelContent("")
 					}
 				}
@@ -143,7 +148,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				m.done = true
-				saveHistory(m.originUrl, reader.GetUrl(), m.cursor)
+				historyManager.Save(utils.HistoryEntry{
+					OriginURL: m.originUrl,
+					LastURL:   reader.GetUrl(),
+					Cursor:    m.cursor,
+				})
 				return m, tea.Quit
 			case "j", "down":
 				if m.cursor < len(m.content)-m.lines {
@@ -152,6 +161,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor = len(m.content) - m.lines
 					}
 				} else if reader.HasNext() {
+					m.cursor = 0
 					return m, func() tea.Msg {
 						return m.fetchNovelContent("down")
 					}
@@ -163,6 +173,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor = 0
 					}
 				} else if reader.HasPrev() {
+					m.cursor = 0
 					return m, func() tea.Msg {
 						return m.fetchNovelContent("down")
 					}
@@ -192,41 +203,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-// 视图函数
-type historyEntry struct {
-	OriginURL string `json:"originUrl"`
-	LastURL   string `json:"lastUrl"`
-	Cursor    int    `json:"cursor"`
-}
-
-func saveHistory(originUrl, lastUrl string, cursor int) {
-	historyDir := path.Join(os.Getenv("HOME"), ".nvrd")
-	historyFile := path.Join(historyDir, "history.json")
-
-	// Create directory if not exists
-	if _, err := os.Stat(historyDir); os.IsNotExist(err) {
-		os.MkdirAll(historyDir, 0755)
-	}
-
-	// Read existing history
-	var history historyEntry
-	if data, err := os.ReadFile(historyFile); err == nil {
-		json.Unmarshal(data, &history)
-	}
-
-	// Update entry
-	history = historyEntry{
-		OriginURL: originUrl,
-		LastURL:   lastUrl,
-		Cursor:    cursor,
-	}
-
-	// Write back to file
-	if data, err := json.Marshal(history); err == nil {
-		os.WriteFile(historyFile, data, 0644)
-	}
 }
 
 func (m model) View() string {
@@ -287,6 +263,8 @@ func main() {
 		state:     "reading",
 	}
 
+	reader.SetUrl(url)
+
 	// 检查历史记录
 	historyDir := path.Join(os.Getenv("HOME"), ".nvrd")
 	historyFile := path.Join(historyDir, "history.json")
@@ -294,7 +272,7 @@ func main() {
 	if _, err := os.Stat(historyFile); err == nil {
 		data, err := os.ReadFile(historyFile)
 		if err == nil {
-			var entry historyEntry
+			var entry utils.HistoryEntry
 			if json.Unmarshal(data, &entry) == nil {
 				// 创建textinput模型
 				ti := textinput.New()
