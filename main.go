@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -45,62 +44,45 @@ func min(a, b int) int {
 }
 
 var (
-	httpClient  = parser.NewDefaultHttpClient()
-	helpStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	novelParser = parser.NewGeneralParser(httpClient)
+	helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	reader    = parser.NewReaderWithoutUrl()
 )
 
 // 定义模型
 type model struct {
-	state        string
-	textInput    textinput.Model
-	originUrl    string
-	url          string
-	lines        int
-	novelContent *parser.NovelResult
-	content      []string
-	cursor       int
-	done         bool
-	loading      bool
+	state     string
+	textInput textinput.Model
+	originUrl string
+	lines     int
+	content   []string
+	cursor    int
+	done      bool
 
 	history historyEntry
 }
 
-// handlePageNavigation 处理页面导航逻辑
-func (m *model) handlePageNavigation(navURL string) (tea.Model, tea.Cmd) {
-	if !strings.HasPrefix(navURL, "http") {
-		currentURL, err := url.Parse(m.url)
-		if err == nil {
-			baseURL := fmt.Sprintf("%s://%s", currentURL.Scheme, currentURL.Host)
-			if strings.HasPrefix(navURL, "/") {
-				navURL = baseURL + navURL
-			} else {
-				dir := path.Dir(currentURL.Path)
-				navURL = baseURL + path.Join(dir, navURL)
-			}
-		}
-	}
-	m.url = navURL
-	m.cursor = 0
-	m.loading = true
-	return m, func() tea.Msg {
-		return m.fetchNovelContent()
-	}
-}
-
 // 初始命令
-func (m *model) fetchNovelContent() tea.Msg {
-	m.loading = true
-	saveHistory(m.originUrl, m.url, 0)
+func (m *model) fetchNovelContent(direction string) tea.Msg {
+	var (
+		novelContent *parser.NovelResult
+		err          error
+	)
 
-	novelContent, err := novelParser.ParseNovel(m.url)
+	switch direction {
+	case "up":
+		novelContent, err = reader.ReadPrev()
+	case "down":
+		novelContent, err = reader.ReadNext()
+	default:
+		novelContent, err = reader.Read()
+	}
+
+	saveHistory(m.originUrl, reader.GetUrl(), 0)
 
 	if err != nil {
-		m.loading = false
 		return errMsg(err)
 	}
-	m.loading = false
-	return contentMsg(&novelContent)
+	return contentMsg(novelContent)
 }
 
 func (m model) Init() tea.Cmd {
@@ -109,7 +91,7 @@ func (m model) Init() tea.Cmd {
 	}
 
 	return func() tea.Msg {
-		return m.fetchNovelContent()
+		return m.fetchNovelContent("")
 	}
 }
 
@@ -134,14 +116,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.textInput.Value() == "Y" || m.textInput.Value() == "y" || m.textInput.Value() == "" {
 					entry := m.history
 					m.originUrl = entry.OriginURL
-					m.url = entry.LastURL
 					m.cursor = entry.Cursor
 					return m, func() tea.Msg {
-						return m.fetchNovelContent()
+						reader.SetUrl(entry.LastURL)
+						return m.fetchNovelContent("")
 					}
 				} else {
 					return m, func() tea.Msg {
-						return m.fetchNovelContent()
+						reader.SetUrl(m.originUrl)
+						return m.fetchNovelContent("")
 					}
 				}
 			}
@@ -151,19 +134,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "reading":
 		switch msg := msg.(type) {
 		case contentMsg:
-			m.novelContent = msg
-			m.content = wordWrap(m.novelContent.Content, 40)
-			m.loading = false
+			m.content = wordWrap(msg.Content, 40)
 			return m, nil
 		case errMsg:
 			m.content = []string{fmt.Sprintf("错误: %v", msg)}
-			m.loading = false
 			return m, nil
 		case tea.KeyMsg:
 			switch msg.String() {
 			case "q", "ctrl+c":
 				m.done = true
-				saveHistory(m.originUrl, m.url, m.cursor)
+				saveHistory(m.originUrl, reader.GetUrl(), m.cursor)
 				return m, tea.Quit
 			case "j", "down":
 				if m.cursor < len(m.content)-m.lines {
@@ -171,8 +151,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.cursor > len(m.content)-m.lines {
 						m.cursor = len(m.content) - m.lines
 					}
-				} else if m.novelContent != nil && m.novelContent.Index.Next != "" {
-					return m.handlePageNavigation(m.novelContent.Index.Next)
+				} else if reader.HasNext() {
+					return m, func() tea.Msg {
+						return m.fetchNovelContent("down")
+					}
 				}
 			case "k", "up":
 				if m.cursor > 0 {
@@ -180,8 +162,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.cursor < 0 {
 						m.cursor = 0
 					}
-				} else if m.novelContent != nil && m.novelContent.Index.Prev != "" {
-					return m.handlePageNavigation(m.novelContent.Index.Prev)
+				} else if reader.HasPrev() {
+					return m, func() tea.Msg {
+						return m.fetchNovelContent("down")
+					}
 				}
 			case "ctrl+f", "pagedown":
 				m.cursor += m.lines
@@ -260,7 +244,7 @@ func (m model) View() string {
 
 	output := ""
 
-	if m.loading || len(m.content) == 0 {
+	if reader.GetLoading() || len(m.content) == 0 {
 		for i := 0; i < m.lines; i++ {
 			output += "\n"
 		}
@@ -274,10 +258,7 @@ func (m model) View() string {
 			output += fmt.Sprintf("%s\n", m.content[i])
 		}
 		progress := float64(m.cursor+1) / float64(len(m.content)) * 100
-		title := m.url
-		if m.novelContent != nil {
-			title = m.novelContent.Title
-		}
+		title := reader.GetTitle()
 		output += helpStyle.Render(fmt.Sprintf("%.2f%%\t%d/%d\t%s", progress, m.cursor+1, len(m.content), title))
 	}
 
@@ -302,7 +283,6 @@ func main() {
 	// 创建初始模型
 	initialModel := model{
 		originUrl: url,
-		url:       url,
 		lines:     lines,
 		state:     "reading",
 	}
