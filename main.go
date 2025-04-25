@@ -57,6 +57,34 @@ type model struct {
 	loading      bool
 }
 
+// handlePageNavigation 处理页面导航逻辑
+func (m *model) handlePageNavigation(navURL string) (tea.Model, tea.Cmd) {
+	if !strings.HasPrefix(navURL, "http") {
+		currentURL, err := url.Parse(m.url)
+		if err == nil {
+			baseURL := fmt.Sprintf("%s://%s", currentURL.Scheme, currentURL.Host)
+			if strings.HasPrefix(navURL, "/") {
+				navURL = baseURL + navURL
+			} else {
+				dir := path.Dir(currentURL.Path)
+				navURL = baseURL + path.Join(dir, navURL)
+			}
+		}
+	}
+	m.url = navURL
+	m.cursor = 0
+	m.loading = true
+	return m, func() tea.Msg {
+		novelContent, err := fetchContent(navURL)
+		if err != nil {
+			m.loading = false
+			return errMsg(err)
+		}
+		m.loading = false
+		return contentMsg(novelContent)
+	}
+}
+
 // fetchContent 获取网页内容
 func fetchContent(url string) (*parser.NovelResult, error) {
 	// 使用通用解析器
@@ -114,31 +142,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = len(m.content) - m.lines
 				}
 			} else if m.novelContent != nil && m.novelContent.Index.Next != "" {
-				nextURL := m.novelContent.Index.Next
-				if !strings.HasPrefix(nextURL, "http") {
-					currentURL, err := url.Parse(m.url)
-					if err == nil {
-						baseURL := fmt.Sprintf("%s://%s", currentURL.Scheme, currentURL.Host)
-						if strings.HasPrefix(nextURL, "/") {
-							nextURL = baseURL + nextURL
-						} else {
-							dir := path.Dir(currentURL.Path)
-							nextURL = baseURL + path.Join(dir, nextURL)
-						}
-					}
-				}
-				m.url = nextURL
-				m.cursor = 0
-				m.loading = true
-				return m, func() tea.Msg {
-					novelContent, err := fetchContent(nextURL)
-					if err != nil {
-						m.loading = false
-						return errMsg(err)
-					}
-					m.loading = false
-					return contentMsg(novelContent)
-				}
+				return m.handlePageNavigation(m.novelContent.Index.Next)
 			}
 		case "k", "up":
 			if m.cursor > 0 {
@@ -147,31 +151,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = 0
 				}
 			} else if m.novelContent != nil && m.novelContent.Index.Prev != "" {
-				prevURL := m.novelContent.Index.Prev
-				if !strings.HasPrefix(prevURL, "http") {
-					currentURL, err := url.Parse(m.url)
-					if err == nil {
-						baseURL := fmt.Sprintf("%s://%s", currentURL.Scheme, currentURL.Host)
-						if strings.HasPrefix(prevURL, "/") {
-							prevURL = baseURL + prevURL
-						} else {
-							dir := path.Dir(currentURL.Path)
-							prevURL = baseURL + path.Join(dir, prevURL)
-						}
-					}
-				}
-				m.url = prevURL
-				m.cursor = 0
-				m.loading = true
-				return m, func() tea.Msg {
-					novelContent, err := fetchContent(prevURL)
-					if err != nil {
-						m.loading = false
-						return errMsg(err)
-					}
-					m.loading = false
-					return contentMsg(novelContent)
-				}
+				return m.handlePageNavigation(m.novelContent.Index.Prev)
 			}
 		case "ctrl+f", "pagedown":
 			m.cursor += m.lines
