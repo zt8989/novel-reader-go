@@ -21,6 +21,20 @@ func NewReaderWithParser(parser IParser) *Reader {
 	}
 }
 
+func NewReaderUrl(url string) *Reader {
+	if !strings.HasPrefix(url, "http") {
+		return &Reader{
+			parser: NewPlainTextParser(url),
+			url:    url,
+		}
+	} else {
+		return &Reader{
+			parser: NewGeneralParser(&DefaultHttpClient{}),
+			url:    url,
+		}
+	}
+}
+
 func NewReaderWithoutUrl() *Reader {
 	return &Reader{
 		parser: NewGeneralParser(&DefaultHttpClient{}),

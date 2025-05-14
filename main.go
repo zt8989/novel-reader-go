@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"unicode/utf8"
 
 	"novel-reader-go/parser"
 	"novel-reader-go/utils"
@@ -19,19 +18,20 @@ import (
 
 // wordWrap 将文本按指定宽度分割成数组
 func wordWrap(str string, maxWidth int) []string {
+	// 统一替换所有换行符为\n
+	str = strings.ReplaceAll(str, "\r\n", "\n")
+	str = strings.ReplaceAll(str, "\r", "\n")
+
 	lines := strings.Split(str, "\n")
 	var newLines []string
 	for _, line := range lines {
-		if utf8.RuneCountInString(line) <= maxWidth {
-			if strings.TrimSpace(line) != "" {
-				newLines = append(newLines, line)
-			}
-		} else {
-			runes := []rune(line)
-			for len(runes) > 0 {
-				newLines = append(newLines, string(runes[:min(maxWidth, len(runes))]))
-				runes = runes[min(maxWidth, len(runes)):]
-			}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		runes := []rune(line)
+		for len(runes) > 0 {
+			newLines = append(newLines, string(runes[:min(maxWidth, len(runes))]))
+			runes = runes[min(maxWidth, len(runes)):]
 		}
 	}
 	return newLines
@@ -45,8 +45,8 @@ func min(a, b int) int {
 }
 
 var (
+	reader         *parser.Reader
 	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	reader         = parser.NewReaderWithoutUrl()
 	historyManager = utils.NewHistoryManager()
 )
 
@@ -64,7 +64,7 @@ type model struct {
 }
 
 // 初始命令
-func (m *model) fetchNovelContent(direction string) tea.Msg {
+func (m model) fetchNovelContent(direction string) tea.Msg {
 	var (
 		novelContent *parser.NovelResult
 		err          error
@@ -191,6 +191,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cursor < 0 {
 					m.cursor = 0
 				}
+			case "ctrl+j":
+				m.cursor += m.lines * 10
+				if m.cursor > len(m.content)-m.lines {
+					m.cursor = len(m.content) - m.lines
+				}
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+			case "ctrl+k":
+				m.cursor -= m.lines * 10
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
 			case "g":
 				m.cursor = 0
 			case "G":
@@ -255,6 +268,9 @@ func main() {
 		fmt.Println("使用方法: novel-reader-go -read <章节地址> [-n 行数]")
 		return
 	}
+
+	// 初始化reader
+	reader = parser.NewReaderUrl(url)
 
 	// 创建初始模型
 	initialModel := model{
